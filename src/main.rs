@@ -12,6 +12,7 @@ use hackclub_dns_fetcher::config::*;
 use hackclub_dns_fetcher::llm::extract_hackathons;
 use hackclub_dns_fetcher::probe::probe;
 use hackclub_dns_fetcher::types::{EntryJson, Hackathon, ProbeResult, SuccessJson};
+use hackclub_dns_fetcher::RateLimiter;
 
 // ── Main ─────────────────────────────────────────────────────────────────────
 
@@ -55,11 +56,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if verbose {
         println!(
             "Probing {} subdomains (concurrency {})...\n",
-            total, CONCURRENCY
+            total, HTTP_CONCURRENCY
         );
     } else {
         print!("Probing subdomains  0/{}", total);
-        let _ = std::io::Write::flush(&mut std::io::stdout());
+        let _ = std::io::stdout().flush();
     }
 
     // ── Probe all subdomains concurrently ────────────────────────────────────
@@ -87,7 +88,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 result
             }
         })
-        .buffer_unordered(CONCURRENCY)
+        .buffer_unordered(HTTP_CONCURRENCY)
         .collect()
         .await;
 
@@ -152,13 +153,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let api_key = Arc::new(api_key);
+    let rate_limiter = Arc::new(RateLimiter::new(LLM_RATE_LIMIT_PER_MINUTE));
+
+    if verbose {
+        println!(
+            "Rate limiting to {} requests/minute with {} concurrent workers\n",
+            LLM_RATE_LIMIT_PER_MINUTE, LLM_CONCURRENCY
+        );
+    }
 
     let hackathons: Vec<Hackathon> = stream::iter(successes)
         .map(|(url, html)| {
             let client = Arc::clone(&client);
             let api_key = Arc::clone(&api_key);
             let llm_done = Arc::clone(&llm_done);
+            let rate_limiter = Arc::clone(&rate_limiter);
             async move {
+                // Acquire a permit from the rate limiter before making the request
+                let _permit = rate_limiter.acquire().await;
                 let result = extract_hackathons(&client, &api_key, &url, &html).await;
                 let n = llm_done.fetch_add(1, Ordering::Relaxed) + 1;
 
@@ -183,7 +195,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 result.unwrap_or_default()
             }
         })
-        .buffer_unordered(CONCURRENCY)
+        .buffer_unordered(LLM_CONCURRENCY)
         .collect::<Vec<Vec<Hackathon>>>()
         .await
         .into_iter()

@@ -1,7 +1,15 @@
 //! Configuration constants for the HackClub Events Radar.
 
-/// Concurrency level for parallel HTTP requests and LLM queries.
-pub const CONCURRENCY: usize = 20;
+/// Concurrency level for parallel HTTP requests (DNS probing).
+pub const HTTP_CONCURRENCY: usize = 20;
+
+/// Concurrency level for LLM queries (limited by rate limit).
+/// Set to 1 to serialize LLM requests and respect rate limits.
+pub const LLM_CONCURRENCY: usize = 4;
+
+/// NVIDIA NIM API rate limit: requests per minute.
+/// Ensure concurrency * ~(60 / requests_per_minute) >= 1
+pub const LLM_RATE_LIMIT_PER_MINUTE: u32 = 40;
 
 /// NVIDIA NIM API endpoint for chat completions.
 pub const NIM_API_URL: &str = "https://integrate.api.nvidia.com/v1/chat/completions";
