@@ -42,4 +42,8 @@ pub struct Hackathon {
     pub dates: String,
     /// One-sentence description of the hackathon.
     pub summary: String,
+    /// ISO 8601 timestamp of when this subdomain was first added to DNS YAML.
+    pub first_added: Option<String>,
+    /// ISO 8601 timestamp of when this subdomain was last modified in DNS YAML.
+    pub last_modified: Option<String>,
 }

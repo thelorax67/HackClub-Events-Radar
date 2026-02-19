@@ -2,17 +2,69 @@ use std::env;
 use std::io::Write;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::collections::HashMap;
 
 use futures::stream::{self, StreamExt};
 use reqwest::Client;
 use serde_yaml::Value;
 use tokio::fs;
+use std::process::Command;
 
 use hackclub_dns_fetcher::config::*;
+use hackclub_dns_fetcher::git_history::get_yaml_git_history;
 use hackclub_dns_fetcher::llm::extract_hackathons;
 use hackclub_dns_fetcher::probe::probe;
 use hackclub_dns_fetcher::types::{EntryJson, Hackathon, ProbeResult, SuccessJson};
 use hackclub_dns_fetcher::RateLimiter;
+
+// ── Helper Functions ─────────────────────────────────────────────────────────
+
+/// Ensures the DNS repository is cloned locally and returns the path.
+fn ensure_dns_repo_cloned(verbose: bool) -> Result<String, Box<dyn std::error::Error>> {
+    let repo_dir = "/tmp/hackclub-dns";
+    
+    if std::path::Path::new(repo_dir).exists() {
+        if verbose {
+            println!("Using existing DNS repository clone at {}", repo_dir);
+        }
+        // Update it to get latest
+        let _ = Command::new("git")
+            .args(&["-C", repo_dir, "fetch", "origin", "main"])
+            .output();
+        return Ok(repo_dir.to_string());
+    }
+    
+    if verbose {
+        println!("Cloning DNS repository to {}...", repo_dir);
+    }
+    
+    let output = Command::new("git")
+        .args(&[
+            "clone",
+            "https://github.com/hackclub/dns.git",
+            repo_dir,
+        ])
+        .output()?;
+    
+    if !output.status.success() {
+        return Err(format!(
+            "Failed to clone DNS repository: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+    
+    Ok(repo_dir.to_string())
+}
+
+/// Extracts the subdomain name from a full URL.
+/// E.g., "http://example.hackclub.com" -> "example"
+fn extract_subdomain_from_url(url: &str) -> Option<String> {
+    url.split("://")
+        .nth(1)
+        .and_then(|host| host.split('.').next())
+        .map(|s| s.to_string())
+}
 
 // ── Main ─────────────────────────────────────────────────────────────────────
 
@@ -52,6 +104,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let total = subdomains.len();
     let done = Arc::new(AtomicUsize::new(0));
+
+    // ── Fetch git history for subdomains ─────────────────────────────────────
+    let mut git_history_map: HashMap<String, (Option<String>, Option<String>)> = HashMap::new();
+    
+    match ensure_dns_repo_cloned(verbose) {
+        Ok(repo_dir) => {
+            if verbose {
+                println!("Fetching git history for subdomains...");
+            }
+            match get_yaml_git_history("hackclub.com.yaml", &repo_dir) {
+                Ok(history) => {
+                    git_history_map = history
+                        .into_iter()
+                        .map(|(k, v)| (k, (v.first_added, v.last_modified)))
+                        .collect();
+                    if verbose {
+                        println!("Loaded git history for {} subdomains", git_history_map.len());
+                    }
+                }
+                Err(e) => {
+                    if verbose {
+                        eprintln!("Warning: Failed to get git history: {}", e);
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            if verbose {
+                eprintln!("Warning: Failed to clone DNS repository: {}", e);
+            }
+        }
+    }
 
     if verbose {
         println!(
@@ -204,6 +288,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!();
 
+    // ── Enrich hackathons with git history data ──────────────────────────────
+    let enriched_hackathons: Vec<Hackathon> = hackathons
+        .into_iter()
+        .map(|mut hackathon| {
+            if let Some(subdomain) = extract_subdomain_from_url(&hackathon.url) {
+                if let Some((first_added, last_modified)) = git_history_map.get(&subdomain) {
+                    hackathon.first_added = first_added.clone();
+                    hackathon.last_modified = last_modified.clone();
+                }
+            }
+            hackathon
+        })
+        .collect();
+
+    let hackathons = enriched_hackathons;
+
     // ── Write & print summary ────────────────────────────────────────────────
     fs::write("summary.json", serde_json::to_string_pretty(&hackathons)?).await?;
 
@@ -219,6 +319,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("  Dates:   {}", h.dates);
             println!("  URL:     {}", h.url);
             println!("  Summary: {}", h.summary);
+            if let Some(first_added) = &h.first_added {
+                println!("  First Added: {}", first_added);
+            }
+            if let Some(last_modified) = &h.last_modified {
+                println!("  Last Modified: {}", last_modified);
+            }
             println!();
         }
     }
