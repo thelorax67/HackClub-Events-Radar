@@ -14,8 +14,8 @@ pub const LLM_RATE_LIMIT_PER_MINUTE: u32 = 40;
 /// NVIDIA NIM API endpoint for chat completions.
 pub const NIM_API_URL: &str = "https://integrate.api.nvidia.com/v1/chat/completions";
 
-/// LLM model identifier (GLM 4.7 via NVIDIA NIM).
-pub const NIM_MODEL: &str = "z-ai/glm4.7";
+/// LLM model identifier (GPT OSS via NVIDIA NIM).
+pub const NIM_MODEL: &str = "openai/gpt-oss-120b";
 
 /// HTTP request timeout duration in seconds.
 pub const REQUEST_TIMEOUT_SECS: u64 = 15;
